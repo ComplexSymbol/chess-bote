@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Linq;
 using ChessChallenge.API;
+using System.Collections.Generic;
 
 //namespace ChessChallenge.Example;
 public class MyBot : IChessBot
@@ -11,7 +13,6 @@ public class MyBot : IChessBot
     int maxDepth = 4; //SET THIS ONLY TO AN EVEN VALUE!!!
     int count = 0;
     bool isEndgame = false;
-    Move[] legalMoves;
 
     readonly ulong[,] PackedSquareBonusTable = {
         { 58233348458073600, 61037146059233280, 63851895826342400, 66655671952007680 },
@@ -42,13 +43,12 @@ public class MyBot : IChessBot
         isEndgame = false;
         board = b;
         turn = b.IsWhiteToMove ? 1 : -1;
-        legalMoves = board.GetLegalMoves();
-        bestMove = legalMoves[0];
+        bestMove = board.GetLegalMoves()[0];
 
         if (isEndgame) maxDepth = 6;
 
         Negamax(maxDepth, -10000, 10000);
-        Console.WriteLine(Evaluate());
+        Console.WriteLine(Evaluate() + "; " + count);
 
         return bestMove;
     }
@@ -57,19 +57,17 @@ public class MyBot : IChessBot
     {
         count++;
 
+        isEndgame = GetMaterials(board.GetAllPieceLists())[1] < 1000 ? true : false;
         if (depth == 0) return Evaluate();
-
-        if (board.IsInCheckmate()) Console.WriteLine("A checkmate for " + (!board.IsWhiteToMove ? "white was found" : "black was found"));
         if (board.IsInCheckmate()) return -10000;
-
         if (board.IsDraw()) return 0;
 
-        legalMoves = board.GetLegalMoves();
-
+        Move[] sortedLegalMoves = SortMoves(board.GetLegalMoves());
+        
         int eval;
-        int bestEval = -10000; 
+        int bestEval = -10000;
 
-        foreach (Move responce in legalMoves)
+        foreach (Move responce in sortedLegalMoves)
         {
             board.MakeMove(responce);
             eval = -Negamax(depth - 1, -beta, -alpha);
@@ -106,16 +104,31 @@ public class MyBot : IChessBot
         return isEndgame ? eval * 100 : 0;
     }
 
-    int Evaluate()
+    int[] GetMaterials(PieceList[] pieceLists)
     {
         int materialAdvantage = 0;
-        int mobilityIndex = board.GetLegalMoves().Length;
-        int squareBonus = 0;
         int totalMaterial = 0;
 
-        PieceList[] pieceLists = board.GetAllPieceLists();
+        for (int i = 0; i < 5; i++)
+        {
+            materialAdvantage += pieceValues[i] * (pieceLists[i].Count - pieceLists[i + 6].Count);
+            totalMaterial += pieceValues[i] * (pieceLists[i].Count + pieceLists[i + 6].Count);
+        }
 
         if (totalMaterial < 2000) isEndgame = true;
+
+        int[] returnArr = { materialAdvantage, totalMaterial};
+        return returnArr; 
+    }
+
+
+    int Evaluate()
+    {
+        PieceList[] pieceLists = board.GetAllPieceLists();
+
+        int mobilityIndex = board.GetLegalMoves().Length;
+        int squareBonus = 0;
+        int materialAdvantage = GetMaterials(pieceLists)[0];
 
         foreach (PieceList pList in pieceLists)
         {
@@ -125,14 +138,54 @@ public class MyBot : IChessBot
             }
         }
 
-        for (int i = 0; i < 5; i++)
+        return turn * (materialAdvantage + mobilityIndex / 10) + squareBonus + EndGameEval(board.GetKingSquare(board.IsWhiteToMove), board.GetKingSquare(!board.IsWhiteToMove));
+    }
+
+    struct sortableMove
+    {
+        public int Ranking { get; set; }
+        public Move UnsortedMove { get; set; }
+    }
+
+    Move[] SortMoves(Move[] movesToSort)
+    {
+        if (movesToSort.Length == 1) return movesToSort;
+
+        List<sortableMove> unsortedMoves = new();
+
+        List<int> rankings = new();
+
+        //Rank each move and push it to rankings
+
+        foreach (Move move in movesToSort)
         {
-            materialAdvantage += pieceValues[i] * (pieceLists[i].Count - pieceLists[i + 6].Count);
-            totalMaterial += pieceValues[i] * (pieceLists[i].Count + pieceLists[i + 6].Count);
+            int moveScoreGuess = 0;
+
+            if (move.IsCapture)
+                moveScoreGuess += 100 * (pieceValues[(int)move.CapturePieceType - 1] - (board.SquareIsAttackedByOpponent(move.TargetSquare) ? pieceValues[(int)move.MovePieceType - 1] : 0));
+
+            if (move.IsPromotion)
+                moveScoreGuess += 100 * pieceValues[(int)move.PromotionPieceType - 1];
+
+            rankings.Add(moveScoreGuess);
         }
 
-        //Console.WriteLine(turn * (materialAdvantage + mobilityIndex / 10) + squareBonus + EndGameEval(board.GetKingSquare(board.IsWhiteToMove), board.GetKingSquare(!board.IsWhiteToMove)));
+        //Sort moves by the moveScoreGuess
+        //Sorry for the messy code!
 
-        return turn * (materialAdvantage + mobilityIndex / 10) + squareBonus + EndGameEval(board.GetKingSquare(board.IsWhiteToMove), board.GetKingSquare(!board.IsWhiteToMove));
+        for (int i = 0; i < rankings.Count; i++)
+        {
+            unsortedMoves.Add(new sortableMove { Ranking = rankings[i], UnsortedMove = movesToSort[i] });
+        }
+
+        unsortedMoves = unsortedMoves.OrderByDescending(o => o.Ranking).ToList();
+        List<Move> sortedMoves = new();
+
+        foreach (sortableMove s in unsortedMoves)
+        {
+            sortedMoves.Add(s.UnsortedMove);
+        }
+
+        return sortedMoves.ToArray();
     }
 }
