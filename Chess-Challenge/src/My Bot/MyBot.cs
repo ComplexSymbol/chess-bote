@@ -15,7 +15,6 @@ public class MyBot : IChessBot
     bool isEndgame = false;
     bool searchCanceled;
     Timer timer;
-    List<signedMove> prevBestMoves = new();
 
     struct signedMove
     {
@@ -112,15 +111,9 @@ public class MyBot : IChessBot
     {
         int eval = 0;
 
-        int oppKingDstFromCntrFile = Math.Max(3 - oppKingSquare.File, oppKingSquare.File - 4);
-        int oppKingDstFromCntrRank = Math.Max(3 - oppKingSquare.Rank, oppKingSquare.Rank - 4);
+        eval += Math.Max(3 - oppKingSquare.File, oppKingSquare.File - 4) + Math.Max(3 - oppKingSquare.Rank, oppKingSquare.Rank - 4);
 
-        int oppKingDstFromCenter = oppKingDstFromCntrFile + oppKingDstFromCntrRank;
-        eval += oppKingDstFromCenter;
-
-        int dstBetweenKings = Math.Abs(ourKingSquare.Rank - oppKingSquare.Rank) + Math.Abs(ourKingSquare.File - oppKingSquare.File);
-
-        eval -= dstBetweenKings;
+        eval -= Math.Abs(ourKingSquare.Rank - oppKingSquare.Rank) + Math.Abs(ourKingSquare.File - oppKingSquare.File);
 
         return isEndgame ? eval * 10 : 0;
     }
