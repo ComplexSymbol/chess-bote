@@ -45,9 +45,10 @@ public class EvilBot : IChessBot
         turn = b.IsWhiteToMove ? 1 : -1;
         bestMove = board.GetLegalMoves()[0];
 
-        //if (isEndgame) maxDepth = 6;
+        if (isEndgame) maxDepth = 6;
 
-        Console.WriteLine("E: " + Negamax(maxDepth, -10000, 10000) + "; " + count);
+        Negamax(maxDepth, -10000, 10000);
+        //Console.WriteLine(Evaluate() + "; " + count);
 
         return bestMove;
     }
