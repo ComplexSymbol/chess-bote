@@ -10,9 +10,18 @@ public class EvilBot : IChessBot
     Move bestMove;
     int[] pieceValues = { 100, 300, 300, 500, 900 };
     int turn;
-    int maxDepth = 4; //SET THIS ONLY TO AN EVEN VALUE!!!
+    int maxDepth = 2; //SET THIS ONLY TO AN EVEN VALUE!!!
     int count = 0;
     bool isEndgame = false;
+    bool searchCanceled;
+    Timer timer;
+    List<signedMove> prevBestMoves = new();
+
+    struct signedMove
+    {
+        public int depthSearched;
+        public Move move;
+    }
 
     readonly ulong[,] PackedSquareBonusTable = {
         { 58233348458073600, 61037146059233280, 63851895826342400, 66655671952007680 },
@@ -27,6 +36,8 @@ public class EvilBot : IChessBot
 
     int GetSquareBonus(PieceType type, bool isWhite, int file, int rank)
     {
+        if (isEndgame) return 0;
+
         if (file > 3)
             file = 7 - file;
 
@@ -38,31 +49,42 @@ public class EvilBot : IChessBot
         return isWhite ? unpackedData : -unpackedData;
     }
 
-    public Move Think(Board b, Timer timer)
+
+    public Move Think(Board b, Timer t)
     {
         isEndgame = false;
         board = b;
         turn = b.IsWhiteToMove ? 1 : -1;
-        bestMove = board.GetLegalMoves()[0];
+        bestMove = b.GetLegalMoves()[0];
+        isEndgame = GetMaterials(b.GetAllPieceLists(), true) < 1000;
+        timer = t;
+        searchCanceled = false;
+        maxDepth = 2;
 
         if (isEndgame) maxDepth = 6;
 
-        Negamax(maxDepth, -10000, 10000);
-        //Console.WriteLine(Evaluate() + "; " + count);
+        for (; ; maxDepth += 2)
+        {
+            Console.WriteLine("E: " + Negamax(maxDepth, -10000, 10000) + "; d = " + maxDepth + "; " + count);
+            if (searchCanceled) break;
+        }
 
         return bestMove;
     }
 
     int Negamax(int depth, int alpha, int beta)
     {
-        count++;
+        if (timer.MillisecondsElapsedThisTurn >= timer.MillisecondsRemaining / 20) searchCanceled = true;
+        if (searchCanceled) return 0;
 
-        isEndgame = GetMaterials(board.GetAllPieceLists())[1] < 1000 ? true : false;
-        if (depth == 0) return Evaluate();
-        if (board.IsInCheckmate()) return -10000;
-        if (board.IsDraw()) return 0;
+        isEndgame = GetMaterials(board.GetAllPieceLists(), true) < 1000;
 
         Move[] sortedLegalMoves = SortMoves(board.GetLegalMoves());
+
+        if (board.IsDraw()) return 0;
+        if (board.IsInCheckmate()) return -10000;
+
+        if (depth == 0) return Evaluate();
 
         int eval;
         int bestEval = -10000;
@@ -73,7 +95,7 @@ public class EvilBot : IChessBot
             eval = -Negamax(depth - 1, -beta, -alpha);
             board.UndoMove(responce);
 
-            if (eval > bestEval)
+            if (eval > bestEval && !searchCanceled)
             {
                 bestEval = eval;
                 bestMove = (depth == maxDepth) ? responce : bestMove;
@@ -83,7 +105,6 @@ public class EvilBot : IChessBot
 
             alpha = Math.Max(alpha, eval);
         }
-
         return alpha;
     }
 
@@ -99,36 +120,38 @@ public class EvilBot : IChessBot
 
         int dstBetweenKings = Math.Abs(ourKingSquare.Rank - oppKingSquare.Rank) + Math.Abs(ourKingSquare.File - oppKingSquare.File);
 
-        eval += 14 - dstBetweenKings;
+        eval -= dstBetweenKings;
 
-        return isEndgame ? eval * 100 : 0;
+        return isEndgame ? eval * 10 : 0;
     }
 
-    int[] GetMaterials(PieceList[] pieceLists)
+    int GetMaterials(PieceList[] pieceLists, bool onlyOpponent)
     {
         int materialAdvantage = 0;
-        int totalMaterial = 0;
+        int oppMaterial = 0;
 
         for (int i = 0; i < 5; i++)
         {
-            materialAdvantage += pieceValues[i] * (pieceLists[i].Count - pieceLists[i + 6].Count);
-            totalMaterial += pieceValues[i] * (pieceLists[i].Count + pieceLists[i + 6].Count);
+            int currentPieceVal = pieceValues[i];
+            materialAdvantage += currentPieceVal * (pieceLists[i].Count - pieceLists[i + 6].Count);
+            oppMaterial += currentPieceVal * pieceLists[i + (onlyOpponent ? (board.IsWhiteToMove ? 6 : 0) : 6)].Count;
         }
 
-        if (totalMaterial < 2000) isEndgame = true;
+        int returnArr = onlyOpponent ? oppMaterial : materialAdvantage;
 
-        int[] returnArr = { materialAdvantage, totalMaterial };
         return returnArr;
     }
 
 
     int Evaluate()
     {
+        count++;
+
         PieceList[] pieceLists = board.GetAllPieceLists();
 
         int mobilityIndex = board.GetLegalMoves().Length;
         int squareBonus = 0;
-        int materialAdvantage = GetMaterials(pieceLists)[0];
+        int materialAdvantage = GetMaterials(pieceLists, false);
 
         foreach (PieceList pList in pieceLists)
         {
@@ -143,8 +166,8 @@ public class EvilBot : IChessBot
 
     struct sortableMove
     {
-        public int Ranking { get; set; }
-        public Move UnsortedMove { get; set; }
+        public int Ranking;
+        public Move UnsortedMove;
     }
 
     Move[] SortMoves(Move[] movesToSort)
@@ -156,7 +179,6 @@ public class EvilBot : IChessBot
         List<int> rankings = new();
 
         //Rank each move and push it to rankings
-
         foreach (Move move in movesToSort)
         {
             int moveScoreGuess = 0;
@@ -166,6 +188,9 @@ public class EvilBot : IChessBot
 
             if (move.IsPromotion)
                 moveScoreGuess += 100 * pieceValues[(int)move.PromotionPieceType - 1];
+
+            if (move.Equals(bestMove))
+                moveScoreGuess += 100000;
 
             rankings.Add(moveScoreGuess);
         }

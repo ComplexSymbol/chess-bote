@@ -8,18 +8,10 @@ public class MyBot : IChessBot
 {
     Board board;
     Move bestMove;
-    int[] pieceValues = { 100, 300, 300, 500, 900 };
+    int[] pieceValues = { 100, 300, 320, 500, 900 };
     int maxDepth = 2;
-    bool isEndgame;
-    bool searchCanceled;
+    bool isEndgame, searchCanceled, playHarder, hasCastled;
     Timer timer;
-    bool playHarder;
-
-    struct signedMove
-    {
-        public int depthSearched;
-        public Move move;
-    }
 
     readonly ulong[,] PackedSquareBonusTable = {
         { 58233348458073600, 61037146059233280, 63851895826342400, 66655671952007680 },
@@ -52,38 +44,48 @@ public class MyBot : IChessBot
     {
         isEndgame = false;
         board = b;
-        bestMove = b.GetLegalMoves()[0];
+        bestMove = b.GetLegalMoves().OrderBy(_ => Guid.NewGuid()).ToList()[0];
         timer = t;
         searchCanceled = false;
         maxDepth = 2;
 
-        //define because the argument needs to be out-able
-        ulong blackPiecesBB = board.BlackPiecesBitboard;
+        //define because the argument needs to be ref
+        ulong blackPiecesBB = b.BlackPiecesBitboard;
 
         //Checks if there are pieces in their opponent's territory
-        playHarder = board.WhitePiecesBitboard > (ulong)Math.Pow(2, 32) || BitboardHelper.ClearAndGetIndexOfLSB(ref blackPiecesBB) < 32;
+        playHarder = b.WhitePiecesBitboard > 0x100000000
+                     || BitboardHelper.ClearAndGetIndexOfLSB(ref blackPiecesBB) < 32;
+
+        Console.WriteLine();
 
         for (; ; maxDepth += 2)
         {
-            Console.WriteLine("M: " + Negamax(maxDepth, -10000, 10000) + "; d = " + maxDepth + "; " + "BM: " + bestMove);
+            Console.WriteLine("M: "
+                              + Negamax(maxDepth, -10000, 10000)
+                              + "; d = "
+                              + maxDepth
+                              + "; "
+                              + "Best "
+                              + bestMove);
+
             if (searchCanceled) break;
         }
 
+        if (bestMove.IsCastles) hasCastled = true;
         return bestMove;
     }
 
     int Negamax(int depth, int alpha, int beta)
     {
-        if ((timer.MillisecondsElapsedThisTurn >= timer.MillisecondsRemaining / (playHarder ? 30 : 60)) || depth >= 100) searchCanceled = true;
+        if ((timer.MillisecondsElapsedThisTurn >= timer.MillisecondsRemaining / (playHarder ? 30 : 50)) || depth >= 1000) searchCanceled = true;
         if (searchCanceled) return 0;
-        if (board.IsDraw()) return 0;
+        if (board.IsDraw()) return -250;
         if (board.IsInCheckmate()) return -10000 + (maxDepth - depth);
         if (depth == 0) return Evaluate();
 
         isEndgame = GetMaterials(board.GetAllPieceLists(), true) < 1000;
         Move[] sortedLegalMoves = SortMoves(board.GetLegalMoves());
-        int eval;
-        int bestEval = -10000;
+        int eval, bestEval = -10000;
 
         foreach (Move responce in sortedLegalMoves)
         {
@@ -107,19 +109,20 @@ public class MyBot : IChessBot
 
     int EndGameEval(Square ourKingSquare, Square oppKingSquare)
     {
-        int eval = 0;
+        int eval = 0, file = oppKingSquare.File, rank = oppKingSquare.Rank;
+        
+        //Distance between opp king and wall
+        eval += Math.Max(3 - file, file - 4) + Math.Max(3 - rank, rank - 4);
 
-        eval += Math.Max(3 - oppKingSquare.File, oppKingSquare.File - 4) + Math.Max(3 - oppKingSquare.Rank, oppKingSquare.Rank - 4);
-
-        eval -= Math.Abs(ourKingSquare.Rank - oppKingSquare.Rank) + Math.Abs(ourKingSquare.File - oppKingSquare.File);
+        //Distance between our king and opp king
+        eval -= Math.Abs(ourKingSquare.Rank - rank) + Math.Abs(ourKingSquare.File - file);
 
         return isEndgame ? eval * 10 : 0;
     }
 
     int GetMaterials(PieceList[] pieceLists, bool onlyOpponent)
     {
-        int materialAdvantage = 0;
-        int oppMaterial = 0;
+        int materialAdvantage = 0, oppMaterial = 0;
 
         for (int i = 0; i < 5; i++)
         {
@@ -136,17 +139,23 @@ public class MyBot : IChessBot
     {
         PieceList[] pieceLists = board.GetAllPieceLists();
 
-        int mobilityIndex = board.GetLegalMoves().Length;
-        int squareBonus = 0;
-        int materialAdvantage = GetMaterials(pieceLists, false);
 
-        //POV: you have to optimize tokens:
-        foreach (PieceList pList in pieceLists) foreach (Piece piece in pList) if (!isEndgame) squareBonus += GetSquareBonus(piece.PieceType, piece.IsWhite, piece.Square.File, piece.Square.Rank);
+        int squareBonus = 0, sum = (board.GetLegalMoves().Length / 10) + GetMaterials(pieceLists, false);
+        
+        int castlesVal = (!hasCastled && !board.HasKingsideCastleRight(board.IsWhiteToMove)) ? -50 : 50;
+
+        //POV: you remove all curley braces
+        foreach (PieceList pList in pieceLists)
+            foreach (Piece piece in pList)
+                if (!isEndgame)
+                    squareBonus += GetSquareBonus(piece.PieceType, piece.IsWhite, piece.Square.File, piece.Square.Rank);
 
         //Fixes weird bug with squarebonuses for black
         if (!board.IsWhiteToMove) squareBonus *= -1;
 
-        return ((board.IsWhiteToMove ? 1 : -1) * (materialAdvantage + (mobilityIndex / 10))) + squareBonus + EndGameEval(board.GetKingSquare(board.IsWhiteToMove), board.GetKingSquare(!board.IsWhiteToMove));
+        return ((board.IsWhiteToMove ? 1 : -1) * sum) + squareBonus +
+            EndGameEval(board.GetKingSquare(board.IsWhiteToMove),
+                        board.GetKingSquare(!board.IsWhiteToMove));
     }
 
     struct sortableMove
@@ -179,8 +188,9 @@ public class MyBot : IChessBot
         }
 
         //Sort moves by the moveScoreGuess
-
-        var sortedMoves = unsortedMoves.OrderByDescending(o => o.Ranking).ToList().ConvertAll(s => s.UnsortedMove);       
+        var sortedMoves = unsortedMoves.OrderByDescending(o => o.Ranking)
+                                       .ToList()
+                                       .ConvertAll(s => s.UnsortedMove);
 
         return sortedMoves.ToArray();
     }
