@@ -3,14 +3,18 @@ using System.Linq;
 using ChessChallenge.API;
 using System.Collections.Generic;
 
+//TODO: Add more stuff to move ordering
+//TODO: 
+
+
 //namespace ChessChallenge.Example;
 public class MyBot : IChessBot
 {
     Board board;
     Move bestMove;
     int[] pieceValues = { 100, 300, 320, 500, 900 };
-    int maxDepth = 2;
-    bool isEndgame, searchCanceled, playHarder, hasCastled;
+    int maxDepth;
+    bool isEndgame, searchCanceled, playHarder;
     Timer timer;
 
     readonly ulong[,] PackedSquareBonusTable = {
@@ -58,26 +62,33 @@ public class MyBot : IChessBot
 
         Console.WriteLine();
 
-        for (; ; maxDepth += 2)
+        for (; ; maxDepth += 1)
         {
+            //TODO: Optimize later
+
+            int eval = Negamax(maxDepth, -10000, 10000);
+            string evalStr = eval.ToString();
+            if (Math.Abs(eval) > 9980) evalStr = "MATE IN " + Math.Ceiling((double)(10000 - Math.Abs(eval)) / 2).ToString();
+
             Console.WriteLine("M: "
-                              + Negamax(maxDepth, -10000, 10000)
+                              + evalStr
                               + "; d = "
                               + maxDepth
-                              + "; "
-                              + "Best "
-                              + bestMove);
+                              + "; Best "
+                              + bestMove
+                              + "; in "
+                              + timer.MillisecondsElapsedThisTurn
+                              + "ms");
 
-            if (searchCanceled) break;
+            if (searchCanceled || eval >= 9980) break;
         }
 
-        if (bestMove.IsCastles) hasCastled = true;
         return bestMove;
     }
 
     int Negamax(int depth, int alpha, int beta)
     {
-        if ((timer.MillisecondsElapsedThisTurn >= timer.MillisecondsRemaining / (playHarder ? 30 : 50)) || depth >= 1000) searchCanceled = true;
+        if ((timer.MillisecondsElapsedThisTurn >= timer.MillisecondsRemaining / (playHarder ? 1.2 : 1.2)) || depth >= 1000) searchCanceled = true;
         if (searchCanceled) return 0;
         if (board.IsDraw()) return -250;
         if (board.IsInCheckmate()) return -10000 + (maxDepth - depth);
@@ -85,6 +96,7 @@ public class MyBot : IChessBot
 
         isEndgame = GetMaterials(board.GetAllPieceLists(), true) < 1000;
         Move[] sortedLegalMoves = SortMoves(board.GetLegalMoves());
+        if (sortedLegalMoves.Length == 1 && depth == maxDepth) return Evaluate();
         int eval, bestEval = -10000;
 
         foreach (Move responce in sortedLegalMoves)
@@ -142,15 +154,13 @@ public class MyBot : IChessBot
 
         int squareBonus = 0, sum = (board.GetLegalMoves().Length / 10) + GetMaterials(pieceLists, false);
         
-        int castlesVal = (!hasCastled && !board.HasKingsideCastleRight(board.IsWhiteToMove)) ? -50 : 50;
-
         //POV: you remove all curley braces
         foreach (PieceList pList in pieceLists)
             foreach (Piece piece in pList)
                 if (!isEndgame)
                     squareBonus += GetSquareBonus(piece.PieceType, piece.IsWhite, piece.Square.File, piece.Square.Rank);
 
-        //Fixes weird bug with squarebonuses for black
+        //Fixes weird bug with square-bonuses for black
         if (!board.IsWhiteToMove) squareBonus *= -1;
 
         return ((board.IsWhiteToMove ? 1 : -1) * sum) + squareBonus +
