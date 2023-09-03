@@ -1,10 +1,10 @@
 ﻿using System;
 using System.Linq;
 using ChessChallenge.API;
-using System.Collections.Generic;
 
 //TODO: Add more stuff to move ordering
-//TODO: 
+//TODO: Run a profiler
+//TODO: Add Transposition tables
 
 
 //namespace ChessChallenge.Example;
@@ -13,7 +13,7 @@ public class MyBot : IChessBot
     Board board;
     Move bestMove;
     int[] pieceValues = { 100, 300, 320, 500, 900 };
-    int maxDepth;
+    int maxDepth, count;
     bool isEndgame, searchCanceled, playHarder;
     Timer timer;
 
@@ -38,7 +38,12 @@ public class MyBot : IChessBot
         if (isWhite)
             rank = 7 - rank;
 
-        sbyte unpackedData = unchecked((sbyte)((PackedSquareBonusTable[rank, file] >> 8 * ((int)type - 1)) & 0xFF));
+        sbyte unpackedData = unchecked((sbyte)((PackedSquareBonusTable[rank, file]
+                             >> 8
+                             * ((int)type - 1))
+                             & 0xFF));
+
+        if (type == PieceType.King) unpackedData *= 3;
 
         return isWhite ? unpackedData : -unpackedData;
     }
@@ -48,10 +53,13 @@ public class MyBot : IChessBot
     {
         isEndgame = false;
         board = b;
-        bestMove = b.GetLegalMoves().OrderBy(_ => Guid.NewGuid()).ToList()[0];
+        bestMove = b.GetLegalMoves()
+                    .OrderBy(g => Guid.NewGuid())
+                    .ToList()[0];
         timer = t;
         searchCanceled = false;
         maxDepth = 2;
+        count = 0;
 
         //define because the argument needs to be ref
         ulong blackPiecesBB = b.BlackPiecesBitboard;
@@ -65,10 +73,9 @@ public class MyBot : IChessBot
         for (; ; maxDepth += 1)
         {
             //TODO: Optimize later
-
             int eval = Negamax(maxDepth, -10000, 10000);
             string evalStr = eval.ToString();
-            if (Math.Abs(eval) > 9980) evalStr = "MATE IN " + Math.Ceiling((double)(10000 - Math.Abs(eval)) / 2).ToString();
+            if (Math.Abs(eval) >= 9980) evalStr = "MATE IN " + Math.Floor((double)(10000 - Math.Abs(eval)) / 2).ToString();
 
             Console.WriteLine("M: "
                               + evalStr
@@ -76,6 +83,8 @@ public class MyBot : IChessBot
                               + maxDepth
                               + "; Best "
                               + bestMove
+                              + "; MT: "
+                              + count
                               + "; in "
                               + timer.MillisecondsElapsedThisTurn
                               + "ms");
@@ -88,15 +97,18 @@ public class MyBot : IChessBot
 
     int Negamax(int depth, int alpha, int beta)
     {
-        if ((timer.MillisecondsElapsedThisTurn >= timer.MillisecondsRemaining / (playHarder ? 1.2 : 1.2)) || depth >= 1000) searchCanceled = true;
+        //Bunch of conditionals at the beginning to save computational time
+        if ((timer.MillisecondsElapsedThisTurn
+             >= timer.MillisecondsRemaining / (playHarder ? 30 : 50))
+             || depth >= 1000) searchCanceled = true;
         if (searchCanceled) return 0;
         if (board.IsDraw()) return -250;
         if (board.IsInCheckmate()) return -10000 + (maxDepth - depth);
         if (depth == 0) return Evaluate();
 
-        isEndgame = GetMaterials(board.GetAllPieceLists(), true) < 1000;
         Move[] sortedLegalMoves = SortMoves(board.GetLegalMoves());
-        if (sortedLegalMoves.Length == 1 && depth == maxDepth) return Evaluate();
+
+        isEndgame = GetMaterials(board.GetAllPieceLists(), true) < 1000;
         int eval, bestEval = -10000;
 
         foreach (Move responce in sortedLegalMoves)
@@ -124,10 +136,12 @@ public class MyBot : IChessBot
         int eval = 0, file = oppKingSquare.File, rank = oppKingSquare.Rank;
         
         //Distance between opp king and wall
-        eval += Math.Max(3 - file, file - 4) + Math.Max(3 - rank, rank - 4);
+        eval += Math.Max(3 - file, file - 4)
+                + Math.Max(3 - rank, rank - 4);
 
         //Distance between our king and opp king
-        eval -= Math.Abs(ourKingSquare.Rank - rank) + Math.Abs(ourKingSquare.File - file);
+        eval -= Math.Abs(ourKingSquare.Rank - rank)
+                + Math.Abs(ourKingSquare.File - file);
 
         return isEndgame ? eval * 10 : 0;
     }
@@ -139,6 +153,9 @@ public class MyBot : IChessBot
         for (int i = 0; i < 5; i++)
         {
             int currentPieceVal = pieceValues[i];
+
+            //Taking advantage of how the pieceLists work
+
             materialAdvantage += currentPieceVal * (pieceLists[i].Count - pieceLists[i + 6].Count);
             oppMaterial += currentPieceVal * pieceLists[i + (onlyOpponent ? (board.IsWhiteToMove ? 6 : 0) : 6)].Count;
         }
@@ -149,11 +166,12 @@ public class MyBot : IChessBot
 
     int Evaluate()
     {
+        count++;
+
         PieceList[] pieceLists = board.GetAllPieceLists();
 
-
         int squareBonus = 0, sum = (board.GetLegalMoves().Length / 10) + GetMaterials(pieceLists, false);
-        
+
         //POV: you remove all curley braces
         foreach (PieceList pList in pieceLists)
             foreach (Piece piece in pList)
@@ -164,26 +182,33 @@ public class MyBot : IChessBot
         if (!board.IsWhiteToMove) squareBonus *= -1;
 
         return ((board.IsWhiteToMove ? 1 : -1) * sum) + squareBonus +
-            EndGameEval(board.GetKingSquare(board.IsWhiteToMove),
-                        board.GetKingSquare(!board.IsWhiteToMove));
+                 EndGameEval(board.GetKingSquare(board.IsWhiteToMove),
+                             board.GetKingSquare(!board.IsWhiteToMove));
     }
 
     struct sortableMove
     {
-        public int Ranking;
         public Move UnsortedMove;
+        public int Ranking;
     }
 
     Move[] SortMoves(Move[] movesToSort)
     {
         if (movesToSort.Length == 1) return movesToSort;
 
-        List<sortableMove> unsortedMoves = new();
+        sortableMove[] sortableMoves = new sortableMove[movesToSort.Length];
 
-        //Rank each move and push it to rankings
+        int i = 0;
+
         foreach (Move move in movesToSort)
         {
             int moveScoreGuess = 0;
+
+            moveScoreGuess += BitboardHelper.GetNumberOfSetBits(BitboardHelper.GetPieceAttacks(
+                                                                                               move.MovePieceType,
+                                                                                               move.StartSquare,
+                                                                                               board,
+                                                                                               board.GetPiece(move.StartSquare).IsWhite));
 
             if (move.IsCapture)
                 moveScoreGuess += 100 * (pieceValues[(int)move.CapturePieceType - 1] - (board.SquareIsAttackedByOpponent(move.TargetSquare) ? pieceValues[(int)move.MovePieceType - 1] : 0));
@@ -194,14 +219,19 @@ public class MyBot : IChessBot
             if (move.Equals(bestMove))
                 moveScoreGuess += 100000;
 
-            unsortedMoves.Add(new sortableMove { Ranking = moveScoreGuess, UnsortedMove = move});
+            sortableMoves[i] = new sortableMove { Ranking = moveScoreGuess, UnsortedMove = move };
+
+            i++;
         }
 
-        //Sort moves by the moveScoreGuess
-        var sortedMoves = unsortedMoves.OrderByDescending(o => o.Ranking)
-                                       .ToList()
-                                       .ConvertAll(s => s.UnsortedMove);
 
-        return sortedMoves.ToArray();
+        //Sort moves by the moveScoreGuess
+        //Convert all elements to the Move element
+
+        Array.Sort(sortableMoves, (x, y) => x.Ranking.CompareTo(y.Ranking));
+        Array.Reverse(sortableMoves);
+        var sortedMoves = sortableMoves.Select(a => a.UnsortedMove).ToArray();
+
+        return sortedMoves;
     }
 }
