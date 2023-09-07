@@ -20,7 +20,7 @@ public class MyBot : IChessBot
     struct Transposition
     {
         public ulong zobristHash;
-        public int evaluation;
+        public int evaluation, tMaxDepth;
         public sbyte depth, flag;
     };
 
@@ -81,11 +81,11 @@ public class MyBot : IChessBot
         for (; ; maxDepth += 1)
         {
             //TODO: Optimize later
-            int eval = Negamax(0, -10000, 10000);
+            int eval = Negamax(maxDepth, -10000, 10000);
 
             // DEBUG DEBUG DEBUG
                 string evalStr = eval.ToString();
-                if (Math.Abs(eval) >= 9980) evalStr = "MATE IN " + (Math.Floor((double)(10000 - Math.Abs(eval)) / 2) + 1).ToString();
+                if (Math.Abs(eval) >= 9980) evalStr = "MATE IN " + Math.Floor(((double)(10000 - Math.Abs(eval)) / 2) + 1).ToString();
 
                 Console.WriteLine("M: " + evalStr
                                   + "; d = " + maxDepth
@@ -108,15 +108,15 @@ public class MyBot : IChessBot
              || maxDepth >= 100) searchCanceled = true;
         if (searchCanceled) return 0;
         if (board.IsDraw()) return -250;
-        if (board.IsInCheckmate()) return -10000 + depth;
-        if (depth == maxDepth) return Evaluate();
+        if (board.IsInCheckmate()) return -10000 + (maxDepth - depth);
+        if (depth == 0) return Evaluate();
 
         ref Transposition transposition = ref TTable[board.ZobristKey & 0x7FFFFF];
         int TE = transposition.evaluation;
 
-        if (board.PlyCount > 0 && transposition.zobristHash == board.ZobristKey && transposition.depth >= depth)
+        if (transposition.zobristHash == board.ZobristKey && transposition.depth >= depth && transposition.tMaxDepth < maxDepth)
         {
-            //DEBUG: Console.WriteLine("TTable: " + transposition.depth + " " + transposition.evaluation);
+            //DEBUG: Console.WriteLine("OD: " + depth + " TTable: " + transposition.depth + " " + transposition.evaluation);
             if (transposition.flag == 1) return TE;
             if (transposition.flag == 2 && TE > beta) return TE;
             if (transposition.flag == 3 && TE <= alpha) return TE;
@@ -129,13 +129,13 @@ public class MyBot : IChessBot
         foreach (Move responce in sortedLegalMoves)
         {
             board.MakeMove(responce);
-            eval = -Negamax(depth + 1, -beta, -alpha);
+            eval = -Negamax(depth - 1, -beta, -alpha);
             board.UndoMove(responce);
 
             if (eval > bestEval && !searchCanceled)
             {
                 bestEval = eval;
-                bestMove = (depth == 0) ? responce : bestMove;
+                bestMove = (depth == maxDepth) ? responce : bestMove;
             }
 
             if (eval >= beta) return beta;
@@ -147,12 +147,7 @@ public class MyBot : IChessBot
         transposition.evaluation = bestEval;
         transposition.zobristHash = board.ZobristKey;
         transposition.depth = (sbyte)depth;
-
-        //Maxdepth 7
-        //Yoursearchdepth 3
-
-        //maxdepth 5
-        //yoursearchdepth 1
+        transposition.tMaxDepth = maxDepth;
 
         if (bestEval < startingAlpha)
             transposition.flag = 3; //upper bound
@@ -161,7 +156,6 @@ public class MyBot : IChessBot
             transposition.flag = 2; //lower bound
 
         else transposition.flag = 1; //"exact" score
-
 
         return alpha;
     }
