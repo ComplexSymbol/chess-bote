@@ -73,6 +73,8 @@ public class EvilBot : IChessBot
         for (; ; maxDepth += 1)
         {
             //TODO: Optimize later
+
+
             int eval = Negamax(maxDepth, -10000, 10000);
 
             /*
@@ -93,6 +95,7 @@ public class EvilBot : IChessBot
             */
 
             if (searchCanceled || eval >= 9980) break;
+            
         }
 
         return bestMove;

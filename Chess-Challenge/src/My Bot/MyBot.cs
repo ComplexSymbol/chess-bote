@@ -2,10 +2,9 @@
 using System.Linq;
 using ChessChallenge.API;
 
-//TODO: Add more stuff to move ordering
 //TODO: Run a profiler
-//TODO: Add Transposition tables
-
+//TODO: Tune the bot
+//TODO: Add UCI & cute chess
 
 //namespace ChessChallenge.Example;
 public class MyBot : IChessBot
@@ -13,7 +12,7 @@ public class MyBot : IChessBot
     Board board;
     Move bestMove;
     int[] pieceValues = { 100, 300, 320, 500, 900 };
-    int maxDepth;
+    int maxDepth, millisRemaining;
     bool isEndgame, searchCanceled, playHarder;
     Timer timer;
 
@@ -68,6 +67,7 @@ public class MyBot : IChessBot
         timer = t;
         searchCanceled = false;
         maxDepth = 2;
+        millisRemaining = t.MillisecondsRemaining;
 
         //define because the argument needs to be ref
         ulong blackPiecesBB = b.BlackPiecesBitboard;
@@ -90,9 +90,8 @@ public class MyBot : IChessBot
                 Console.WriteLine("M: " + evalStr
                                   + "; d = " + maxDepth
                                   + "; Best " + bestMove
-                                  + "; TL: "
                                   + "; in " + timer.MillisecondsElapsedThisTurn + "ms");
-            
+            //END DEBUG
 
             if (searchCanceled || eval >= 9980) break;
         }
@@ -104,23 +103,26 @@ public class MyBot : IChessBot
     {
         //Bunch of conditionals at the beginning to save computational time
         if (timer.MillisecondsElapsedThisTurn
-             >= timer.MillisecondsRemaining / (playHarder ? 30 : 50)
+             >= millisRemaining / (playHarder ? 30 : 50)
              || maxDepth >= 100) searchCanceled = true;
         if (searchCanceled) return 0;
         if (board.IsDraw()) return -250;
         if (board.IsInCheckmate()) return -10000 + (maxDepth - depth);
-        if (depth == 0) return Evaluate();
+        if (depth == 0) return QSearch(alpha, beta);
 
         ref Transposition transposition = ref TTable[board.ZobristKey & 0x7FFFFF];
         int TE = transposition.evaluation;
 
-        if (transposition.zobristHash == board.ZobristKey && transposition.depth >= depth && transposition.tMaxDepth < maxDepth)
-        {
-            //DEBUG: Console.WriteLine("OD: " + depth + " TTable: " + transposition.depth + " " + transposition.evaluation);
-            if (transposition.flag == 1) return TE;
-            if (transposition.flag == 2 && TE > beta) return TE;
-            if (transposition.flag == 3 && TE <= alpha) return TE;
-        }
+        if (depth != 2
+            && transposition.zobristHash == board.ZobristKey
+            && transposition.depth < depth
+            && transposition.tMaxDepth > maxDepth
+            &&
+            (transposition.flag == 1
+            || (transposition.flag == 2 && TE > beta)
+            || (transposition.flag == 3 && TE <= alpha)
+            )) return TE;
+
 
         Move[] sortedLegalMoves = SortMoves(board.GetLegalMoves());
         isEndgame = GetMaterials(board.GetAllPieceLists(), true) < 1000;
@@ -143,7 +145,6 @@ public class MyBot : IChessBot
             alpha = Math.Max(alpha, eval);
         }
 
-
         transposition.evaluation = bestEval;
         transposition.zobristHash = board.ZobristKey;
         transposition.depth = (sbyte)depth;
@@ -156,6 +157,32 @@ public class MyBot : IChessBot
             transposition.flag = 2; //lower bound
 
         else transposition.flag = 1; //"exact" score
+
+
+        return alpha;
+    }
+
+    int QSearch(int alpha, int beta)
+    {
+        int stand_pat = Evaluate();
+        if (stand_pat >= beta)
+            return beta;
+        if (alpha < stand_pat)
+            alpha = stand_pat;
+
+        Move[] legalCaptures = board.GetLegalMoves(true);
+        int score;
+
+        foreach (Move capture in legalCaptures)  {
+            board.MakeMove(capture);
+            score = -QSearch(-beta, -alpha);
+            board.UndoMove(capture);
+
+            if (score >= beta)
+                return beta;
+            if (score > alpha)
+                alpha = score;
+        }
 
         return alpha;
     }
