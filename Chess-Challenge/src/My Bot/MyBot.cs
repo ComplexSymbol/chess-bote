@@ -53,7 +53,7 @@ public class MyBot : IChessBot
     public Move Think(Board b, Timer t)
     {
         board = b;
-        bestMove = confirmedMove = SortMoves(board.GetLegalMoves())[0];
+        bestMove = confirmedMove = SortMoves(board.GetLegalMoves(), 0)[0];
         timer = t;
         searchCanceled = false;
         maxDepth = 1;
@@ -69,7 +69,7 @@ public class MyBot : IChessBot
         for (; ;)
         {
             posEvaled = 0;
-            int eval = Negamax(++maxDepth, -1000000, 1000000, maxDepth);
+            int eval = Negamax(++maxDepth, -1000000, 1000000, maxDepth, false);
 
             string evalStr = eval.ToString();
             string sign = (Math.Abs(eval) >= 9980) ? (Math.Sign(eval) == 1 ? "+" : "-") : "";
@@ -89,15 +89,14 @@ public class MyBot : IChessBot
 #else
         for (; ; )
         {
-            int eval = Negamax(++maxDepth, -1000000, 1000000, maxDepth);
-            if (searchCanceled) return confirmedMove;
-            else if (eval >= 99800) return bestMove;
+            if (Negamax(++maxDepth, -1000000, 1000000, maxDepth, false) >= 99800 && !searchCanceled) return bestMove;
+            else if (searchCanceled) return confirmedMove;
             else confirmedMove = bestMove;
         }
 #endif
     }
 
-    int Negamax(int depth, int alpha, int beta, int ply)
+    int Negamax(int depth, int alpha, int beta, int ply, bool isQsearch)
     {
 #if DoDebug
         posEvaled++;
@@ -108,7 +107,9 @@ public class MyBot : IChessBot
              || maxDepth >= 100) searchCanceled = true;
         if (board.IsRepeatedPosition()) return 0;
         if (board.IsInCheckmate()) return -1000000 + (maxDepth - ply);
-        if (depth == 0) return QSearch(alpha, beta);
+        //if (depth == 0) return QSearch(alpha, beta);
+        if (depth == 0) isQsearch = true;
+
 
         ref var transposition = ref TTable[board.ZobristKey & 0x7FFFFF];
 
@@ -116,26 +117,36 @@ public class MyBot : IChessBot
             eval,
             bestEval = -1000000,
             startingAlpha = alpha,
-            flaggie = transposition.Item5;
+            flaggie = transposition.Item5,
+            stand_pat = Evaluate();
+
+        if (isQsearch)
+        {
+            if (stand_pat >= beta)
+                return beta;
+            if (alpha < stand_pat)
+                alpha = stand_pat;
+        }
 
         if (depth > 2
             && transposition.Item1 == board.ZobristKey
             && transposition.Item3 <= ply
             && transposition.Item4 > maxDepth
+            && !isQsearch
             &&
             (flaggie == 1
             || (flaggie == 2 && TE > beta)
             || (flaggie == 3 && TE <= alpha)))
                 return TE;
 
-        foreach (Move response in SortMoves(board.GetLegalMoves(), depth))
+        foreach (Move response in SortMoves(board.GetLegalMoves(isQsearch), depth))
         {
             if (searchCanceled) return 0;
             board.MakeMove(response);
-            eval = -Negamax(depth - ((board.IsInCheck() && depth < maxDepth) ? 0 : 1), -beta, -alpha, ply - 1);
+            eval = -Negamax(depth - ((board.IsInCheck() && depth < maxDepth) ? 0 : 1), -beta, -alpha, ply - 1, isQsearch);
             board.UndoMove(response);
 
-            if (eval > bestEval && !searchCanceled)
+            if (eval > bestEval && !searchCanceled && !isQsearch)
             {
                 bestEval = eval;
                 if (depth == maxDepth) bestMove = response;
@@ -143,23 +154,28 @@ public class MyBot : IChessBot
 
             if (eval >= beta)
             {
-                transposition = (board.ZobristKey, bestEval, depth, maxDepth, 2);
-                if (!response.IsCapture)
+                if (!isQsearch)
                 {
-                    killerMoves[depth] = response;
-                    historyHeuristics[board.IsWhiteToMove ? 0 : 1, response.StartSquare.Index, response.TargetSquare.Index] += depth * depth;
+                    transposition = (board.ZobristKey, bestEval, depth, maxDepth, 2);
+                    if (!response.IsCapture)
+                    {
+                        killerMoves[depth] = response;
+                        historyHeuristics[board.IsWhiteToMove ? 0 : 1, response.StartSquare.Index, response.TargetSquare.Index] += depth * depth;
+                    }
                 }
                 return beta;
             }
+
             alpha = Math.Max(alpha, eval);
         }
 
-        if (!searchCanceled)
+        if (!searchCanceled && !isQsearch)
             transposition = (board.ZobristKey, bestEval, depth, maxDepth, bestEval >= beta ? 2 : bestEval > startingAlpha ? 3 : 1);
 
         return alpha;
     }
 
+    /*
     int QSearch(int alpha, int beta)
     {
         int stand_pat = Evaluate(),
@@ -184,6 +200,7 @@ public class MyBot : IChessBot
 
         return alpha;
     }
+    */
 
     int Evaluate()
     {
@@ -226,10 +243,12 @@ public class MyBot : IChessBot
     }
 
     //set element number so you dont have to initialize the array every time
-    SortableMove[] sortableMoves = new SortableMove[100];
+    SortableMove[] sortableMoves = new SortableMove[110];
 
-    Move[] SortMoves(Move[] movesToSort, int d = 0)
+    Move[] SortMoves(Move[] movesToSort, int d)
     {
+        if (d <= 0) return movesToSort;
+
         int i = -1;
 
         //Don't use array.clear because you only use the part of the array that you modify

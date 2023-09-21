@@ -1,3 +1,5 @@
+//#define DoDebug
+
 using System;
 using System.Linq;
 using ChessChallenge.API;
@@ -15,14 +17,19 @@ public class EvilBot : IChessBot
     Move[] killerMoves = new Move[1024];
     int maxDepth,
         millisRemaining,
-        searchTime,
-        posEvaled;
+        searchTime;
+#if DoDebug
+    int posEvaled;
+#endif
+
+
     int[,,] historyHeuristics = new int[2, 64, 64];
     bool searchCanceled;
     Timer timer;
 
     //Item1 is hash; Item2 is eval; Item3 is depth; Item4 is tMaxDepth; Item5 is flag
-    (ulong, int, int, int, byte, bool)[] TTable = new (ulong, int, int, int, byte, bool)[0x800000];
+
+    (ulong, int, int, int, int)[] TTable = new (ulong, int, int, int, int)[0x800000];
 
     static int[] pieceValues = { 77, 302, 310, 434, 890, 0, // Middlegame
                                  109, 331, 335, 594, 1116, 0, }, // Endgame;
@@ -51,21 +58,23 @@ public class EvilBot : IChessBot
         searchCanceled = false;
         maxDepth = 1;
         millisRemaining = t.MillisecondsRemaining;
-        searchTime = (b.PlyCount < 20) ? millisRemaining / 200 : millisRemaining / 30;
-        posEvaled = 0;
+        searchTime = (b.PlyCount < 20) ? millisRemaining / 150 : millisRemaining / 30;
         historyHeuristics = new int[2, 64, 64];
 
-#if !true
+
+
+#if DoDebug
         Console.WriteLine();
 
-        for (; ; )
+        for (; ;)
         {
-            int eval = Negamax(++maxDepth, -10000, 10000);
+            posEvaled = 0;
+            int eval = Negamax(++maxDepth, -1000000, 1000000, maxDepth);
 
             string evalStr = eval.ToString();
             string sign = (Math.Abs(eval) >= 9980) ? (Math.Sign(eval) == 1 ? "+" : "-") : "";
 
-            if (Math.Abs(eval) >= 9980) evalStr = "MATE IN " + Math.Floor(((double)(10000 - Math.Abs(eval)) / 2) + 1).ToString();
+            if (Math.Abs(eval) >= 99800) evalStr = "MATE IN " + Math.Floor(((double)(1000000 - Math.Abs(eval)) / 4) + 1).ToString();
             if (searchCanceled) evalStr = "SEARCH CANCELED ";
 
             Console.WriteLine("M: " + sign + evalStr
@@ -74,44 +83,45 @@ public class EvilBot : IChessBot
                                 + "; PosEval " + posEvaled
                                 + "; in " + timer.MillisecondsElapsedThisTurn + "ms");
 
-            if (searchCanceled || eval >= 9980) return confirmedMove;
+            if (searchCanceled) return confirmedMove;
             else confirmedMove = bestMove;
         }
 #else
         for (; ; )
         {
-            if (Negamax(++maxDepth, -10000, 10000) >= 9980 || searchCanceled) return confirmedMove;
+            int eval = Negamax(++maxDepth, -1000000, 1000000, maxDepth);
+            if (searchCanceled) return confirmedMove;
+            else if (eval >= 99800) return bestMove;
             else confirmedMove = bestMove;
         }
 #endif
     }
 
-    int Negamax(int depth, int alpha, int beta)
+    int Negamax(int depth, int alpha, int beta, int ply)
     {
+#if DoDebug
         posEvaled++;
-
+#endif
         //Bunch of conditionals at the beginning to save computational time
         if (timer.MillisecondsElapsedThisTurn
              >= searchTime
              || maxDepth >= 100) searchCanceled = true;
         if (board.IsRepeatedPosition()) return 0;
-        if (board.IsInCheckmate()) return -10000 + (maxDepth - depth);
+        if (board.IsInCheckmate()) return -1000000 + (maxDepth - ply);
         if (depth == 0) return QSearch(alpha, beta);
 
         ref var transposition = ref TTable[board.ZobristKey & 0x7FFFFF];
 
         int TE = transposition.Item2,
             eval,
-            bestEval = -10000,
+            bestEval = -1000000,
             startingAlpha = alpha,
             flaggie = transposition.Item5;
-        byte setFlag;
 
         if (depth > 2
             && transposition.Item1 == board.ZobristKey
-            && transposition.Item3 <= depth
+            && transposition.Item3 <= ply
             && transposition.Item4 > maxDepth
-            && transposition.Item6 == board.IsWhiteToMove
             &&
             (flaggie == 1
             || (flaggie == 2 && TE > beta)
@@ -122,7 +132,7 @@ public class EvilBot : IChessBot
         {
             if (searchCanceled) return 0;
             board.MakeMove(response);
-            eval = -Negamax(depth - 1, -beta, -alpha);
+            eval = -Negamax(depth - ((board.IsInCheck() && depth < maxDepth) ? 0 : 1), -beta, -alpha, ply - 1);
             board.UndoMove(response);
 
             if (eval > bestEval && !searchCanceled)
@@ -133,7 +143,7 @@ public class EvilBot : IChessBot
 
             if (eval >= beta)
             {
-                transposition = (board.ZobristKey, bestEval, depth, maxDepth, 2, board.IsWhiteToMove);
+                transposition = (board.ZobristKey, bestEval, depth, maxDepth, 2);
                 if (!response.IsCapture)
                 {
                     killerMoves[depth] = response;
@@ -145,17 +155,7 @@ public class EvilBot : IChessBot
         }
 
         if (!searchCanceled)
-        {
-            if (bestEval < startingAlpha)
-                setFlag = 3; //upper bound
-
-            else if (bestEval >= beta)
-                setFlag = 2; //lower bound
-
-            else setFlag = 1; //"exact" score
-
-            transposition = (board.ZobristKey, bestEval, depth, maxDepth, setFlag, board.IsWhiteToMove);
-        }
+            transposition = (board.ZobristKey, bestEval, depth, maxDepth, bestEval >= beta ? 2 : bestEval > startingAlpha ? 3 : 1);
 
         return alpha;
     }
@@ -214,26 +214,6 @@ public class EvilBot : IChessBot
                         middlegame -= 15;
                         endgame -= 15;
                     }
-
-                    // Semi-open file bonus for rooks
-
-                    if (piece == 3 && (0x101010101010101UL << (square & 7) & board.GetPieceBitboard(PieceType.Pawn, sideToMove > 0)) == 0)
-                    {
-                        middlegame += 13;
-                        endgame += 10;
-                    }
-
-
-                    // Mobility bonus
-
-                    if (piece >= 2 && piece <= 4)
-                    {
-                        int bonus = BitboardHelper.GetNumberOfSetBits(
-                            BitboardHelper.GetPieceAttacks((PieceType)piece + 1, new Square(square ^ 56 * sideToMove), board, sideToMove > 0));
-                        middlegame += bonus;
-                        endgame += bonus * 2;
-                    }
-
                 }
         return (middlegame * gamephase + endgame * (24 - gamephase)) / (board.IsWhiteToMove ? 24 : -24) + 16;
     }
@@ -259,6 +239,9 @@ public class EvilBot : IChessBot
             int moveScoreGuess = 0;
 
             //uses -= for moveScoreGuess so that you don't have to do .Reverse() at the end
+            if (move.Equals(bestMove))
+                moveScoreGuess -= 10_000_000;
+
             if (move.Equals(killerMoves[d]))
                 moveScoreGuess -= 1_000_000;
 
