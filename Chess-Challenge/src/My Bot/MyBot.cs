@@ -3,6 +3,7 @@
 using System;
 using System.Linq;
 using ChessChallenge.API;
+using System.Numerics;
 
 //TODO: Run a profiler
 //TODO: Tune the bot
@@ -11,25 +12,30 @@ using ChessChallenge.API;
 
 public class MyBot : IChessBot
 {
-    Board board;
-    Move bestMove, confirmedMove;
-    static int[] pieceValues = { 77, 302, 310, 434, 890, 0, // Middlegame
-                                 109, 331, 335, 594, 1116, 0, }; //Endgame
-    Move[] killerMoves = new Move[1024];
-    int maxDepth,
-        millisRemaining;
-    bool searchCanceled;
-    Timer timer;
-    int[,,] historyHeuristics = new int[2, 64, 64];
+    private Board board;
+    private Move bestMove, confirmedMove;
+    private static readonly int[] pieceValues = { 77, 302, 310, 434, 890, 0, // Middlegame
+                                 109, 331, 335, 594, 1116, 0, }, //Endgame
+                 attackWeights = { 0, 50, 75, 88, 94, 97, 99 }, 
+                 attackValues = {0, 0, 20, 20, 40, 80 }; 
+    private readonly Move[] killerMoves = new Move[1024];
+    private int maxDepth,
+                millisRemaining;
+    private bool searchCanceled;
+    private Timer timer;
+    readonly int[,,] historyHeuristics = new int[2, 64, 64];
+
+
 
 #if DEBUG
     int posEvaluated, maxTime = 0;
+    decimal avg = 0;
 #endif
 
     //Item1 is hash; Item2 is eval; Item3 is depth; Item4 is tMaxDepth; Item5 is flag
     (ulong, int, int, int, int)[] TTable = new(ulong, int, int, int, int)[0x7FFFFF + 1];
 
-    int[] UnpackedPestoTables =
+    private readonly int[] UnpackedPestoTables =
         new[] {
             59445390105436474986072674560m, 70290677894333901267150682880m, 71539517137735599738519086336m, 78957476706409475571971323392m, 76477941479143404670656189696m, 78020492916263816717520067072m, 77059410983631195892660944640m, 61307098105356489251813834752m,
             77373759864583735626648317994m, 3437103645554060776222818613m, 5013542988189698109836108074m, 2865258213628105516468149820m, 5661498819074815745865228343m, 8414185094009835055136457260m, 7780689186187929908113377023m, 2486769613674807657298071274m,
@@ -61,6 +67,7 @@ public class MyBot : IChessBot
 
         for (; ; )
         {
+            avg = 0;
             posEvaluated = 0;
             int eval = Negamax(++maxDepth, 0, -100_000, 100_000);
 
@@ -69,17 +76,25 @@ public class MyBot : IChessBot
 
             if (Math.Abs(eval) >= 9980) evalStr = sign + "MATE IN " + Math.Floor(((double)(100_000 - Math.Abs(eval)) / 2) + 1).ToString();
 
-            Console.WriteLine("M eval: " + evalStr
-                              + "; d: " + maxDepth
-                              + "; PE: " + posEvaluated
-                              + "; MT: " + maxTime
-                              + "; Best: " + bestMove
-                              + "; in: " + timer.MillisecondsElapsedThisTurn + "ms"
-                              + "; Pos: " + board.GetFenString());
+            Console.WriteLine("M eval: " + evalStr //Eval
+
+                              + "; d: " + maxDepth //Depth that it searched to
+
+                              + "; PE: " + posEvaluated //Number of positions it evaluated this iteration
+
+                              + "; MT: " + maxTime //The max amount of time it took to sort moves
+
+                              + "; Best " + bestMove //Best move returned this iteration
+
+                              + "; Avg: " + Math.Round(avg, 3) //Average score returned by king safety
+
+                              + "; in: " + timer.MillisecondsElapsedThisTurn + "ms" //How long it took to complete this iteration
+
+                              + "; Pos: " + board.GetFenString()); //FEN representation of the board
 
 
             if (searchCanceled) return confirmedMove;
-            if (eval >= 99800) return bestMove;
+            else if (eval >= 99800) return bestMove;
             confirmedMove = bestMove;
         }
 #else
@@ -126,8 +141,9 @@ public class MyBot : IChessBot
             if (searchCanceled) return 0;
 
             board.MakeMove(response);
-            int extension = board.IsInCheck() ? 1 : 0;
-            eval = -Negamax(depth - 1 + extension, ply + 1, -beta, -alpha);
+            //Depth extension, only decrease depth if the move wasn't check
+            //Equivilent to adding depth if there is check but with less tokens
+            eval = -Negamax(depth - (board.IsInCheck() ? 0 : 1), ply + 1, -beta, -alpha);
             board.UndoMove(response);
 
             if (eval >= beta)
@@ -155,8 +171,8 @@ public class MyBot : IChessBot
         //New transposition
         if (!searchCanceled)
             transposition = (board.ZobristKey, bestEval, depth, maxDepth, bestEval >= beta ? 2
-                                                                                         : bestEval > startingAlpha ? 3
-                                                                                                                    : 1);
+                                                                                           : bestEval > startingAlpha ? 3
+                                                                                                                      : 1);
 
         return alpha;
     }
@@ -193,6 +209,7 @@ public class MyBot : IChessBot
         posEvaluated++;
 #endif
         int middlegame = 0, endgame = 0, gamephase = 0, sideToMove = 2, piece, square;
+        bool hasScoredKing = false;
         for (; --sideToMove >= 0; middlegame = -middlegame, endgame = -endgame)
             for (piece = 6; --piece >= 0;)
                 for (ulong mask = board.GetPieceBitboard((PieceType)piece + 1, sideToMove > 0); mask != 0;)
@@ -202,42 +219,19 @@ public class MyBot : IChessBot
                     gamephase += 0x00042110 >> piece * 4 & 0x0F;
 
                     // Material and square evaluation
-                    square = BitboardHelper.ClearAndGetIndexOfLSB(ref mask) ^ 56 * sideToMove;
+                    square = BitboardHelper.ClearAndGetIndexOfLSB(ref mask) ^ 0b111000 * sideToMove;
                     middlegame += UnpackedPestoTables[square * 16 + piece];
                     endgame += UnpackedPestoTables[square * 16 + piece + 6];
 
-                    // Bishop pair bonus
-                    if (piece == 2 && mask != 0)
-                    {
-                        middlegame += 23;
-                        endgame += 62;
-                    }
+                    //TODO: Optimize later
+                    if (!hasScoredKing) middlegame += GetKingSafety(piece, sideToMove, mask);
+                    else hasScoredKing = true;
 
-                    // Doubled pawns penalty
-                    if (piece == 0 && (0x101010101010101UL << (square & 7) & mask) > 0)
-                    {
-                        middlegame -= 15;
-                        endgame -= 15;
-                    }
-
-                    // Semi-open file bonus for rooks
-                    if (piece == 3 && (0x101010101010101UL << (square & 7) & board.GetPieceBitboard(PieceType.Pawn, sideToMove > 0)) == 0)
-                    {
-                        middlegame += 13;
-                        endgame += 10;
-                    }
-                    
-
-                    // Mobility bonus
-                    if (piece >= 2 && piece <= 4)
-                    {
-                        int bonus = BitboardHelper.GetNumberOfSetBits(
-                            BitboardHelper.GetPieceAttacks((PieceType)piece + 1, new Square(square ^ 0b111000 * sideToMove), board, sideToMove > 0));
-                        middlegame += bonus;
-                        endgame += bonus * 2;
-                    }
-                    
-                }
+#if DODEBUG
+                    if (kingSafetyScore != 0)
+                    avg = (avg + kingSafetyScore) / 2;
+#endif
+        }
         return (middlegame * gamephase + endgame * (24 - gamephase)) / (board.IsWhiteToMove ? 24 : -24)
             // Tempo bonus to help with aspiration windows
             + 16;
@@ -285,5 +279,58 @@ public class MyBot : IChessBot
 #endif
         //Convert all elements to the move element
         return ourMoves.Select(a => a.UnsortedMove).ToArray();
+    }
+
+    int GetKingSafety(int piece, int turn, ulong mask)
+    {
+        int numberOfSquaresAttacked = 0, valueOfAttacks = 0;
+
+        //King Safety
+        //Don't waste your time on irrelevent pieces that can't attack the king (none, pawn, king)
+        if (piece is -1 or 0 or 5) return 0;
+
+        //Opposite colored king than the pieces we are evaluating
+        Square kingSquare = board.GetKingSquare(!(turn > 0));
+
+        // King zone is king with 3 extra squares towards the enemy territory
+        // The king zone is generated by bitwise or-ing 2 king attack bitboards
+        // The first king is just the king, the second one is the king moved one
+        // square towards the opponents side of the board. This gives a rectangle
+        // that is stretched one row extended towards the opponent.
+        int squareIndex = kingSquare.Index + (!(turn > 0) ? 8 : -8);
+        if (squareIndex is < 0 or > 63) squareIndex = kingSquare.Index;
+
+        //Bitboard of the squares that are attacked in the king area
+        //CopyMask is a copy of the mask, which is all of the squares
+        //of the current piece type that are on the board.
+
+        while (mask > 0)
+        {
+            //Square index of current piece
+            int square = BitboardHelper.ClearAndGetIndexOfLSB(ref mask) ^ 0b111000 * turn;
+
+
+            //Squares of the overlap of current piece attacks and the king zone
+            ulong squaresAttackedInKingZone = (BitboardHelper.GetKingAttacks(kingSquare)
+                                               | BitboardHelper.GetKingAttacks(new Square(squareIndex)))
+                                                    //Bitboard of the current piece's attacks
+                                                 & (BitboardHelper.GetPieceAttacks((PieceType)piece + 1, //Current piece
+                                                                                   new Square(square ^ 0b111000 * turn), //Square of current piece
+                                                                                   board, //board of blockers
+                                                                                   turn > 0)); //Color of piece);
+
+            //If there are no attackers move on
+            if (squaresAttackedInKingZone == 0) continue;
+
+            //Number of attacked squares in the king area
+            int currentAttackerSquareCount = BitOperations.PopCount(squaresAttackedInKingZone);
+
+            //Increase the number of squares attacked and increase the value of the attack
+            //based on the value of the attacking piece
+            numberOfSquaresAttacked += currentAttackerSquareCount;
+            valueOfAttacks += currentAttackerSquareCount * attackValues[piece];
+        }
+
+        return (int)Math.Round(valueOfAttacks * (decimal)attackWeights[Math.Min(numberOfSquaresAttacked, 6)] / 500);
     }
 }
