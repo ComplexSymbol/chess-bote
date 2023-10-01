@@ -27,7 +27,7 @@ public class MyBot : IChessBot
 #endif
 
     //Item1 is hash; Item2 is eval; Item3 is depth; Item4 is tMaxDepth; Item5 is flag
-    (ulong, int, int, int, int)[] TTable = new (ulong, int, int, int, int)[0x7FFFFF + 1];
+    (ulong, int, int, int, int)[] TTable = new(ulong, int, int, int, int)[0x7FFFFF + 1];
 
     int[] UnpackedPestoTables =
         new[] {
@@ -62,44 +62,46 @@ public class MyBot : IChessBot
         for (; ; )
         {
             posEvaluated = 0;
-            int eval = Negamax(++maxDepth, -100_000, 100_000);
+            int eval = Negamax(++maxDepth, 0, -100_000, 100_000);
 
             string evalStr = eval.ToString();
             string sign = (Math.Abs(eval) >= 99800) ? (Math.Sign(eval) == 1 ? "+" : "-") : "";
 
             if (Math.Abs(eval) >= 9980) evalStr = sign + "MATE IN " + Math.Floor(((double)(100_000 - Math.Abs(eval)) / 2) + 1).ToString();
 
-            Console.WriteLine("M: " + evalStr
-                              + "; d = " + maxDepth
-                              + "; PE " + posEvaluated
-                              + "; MT " + maxTime
-                              + "; Best " + bestMove
-                              + "; in " + timer.MillisecondsElapsedThisTurn + "ms");
+            Console.WriteLine("M eval: " + evalStr
+                              + "; d: " + maxDepth
+                              + "; PE: " + posEvaluated
+                              + "; MT: " + maxTime
+                              + "; Best: " + bestMove
+                              + "; in: " + timer.MillisecondsElapsedThisTurn + "ms"
+                              + "; Pos: " + board.GetFenString());
 
 
+            if (searchCanceled) return confirmedMove;
             if (eval >= 99800) return bestMove;
-            else if (searchCanceled) return confirmedMove;
-            else confirmedMove = bestMove;
+            confirmedMove = bestMove;
         }
 #else
         for (; ; )
         {
-            if (Negamax(++maxDepth, -100_000, 100_000) >= 99800) return bestMove;
-            else if (searchCanceled) return confirmedMove;
+            if (Negamax(++maxDepth, 0, -100_000, 100_000) >= 99800 && !searchCanceled) return bestMove;
+            if (searchCanceled) return confirmedMove;
             else confirmedMove = bestMove;
         }
 #endif
     }
 
-    int Negamax(int depth, int alpha, int beta)
+    int Negamax(int depth, int ply, int alpha, int beta)
     {
         //Bunch of conditionals at the beginning to save computational time
         if (timer.MillisecondsElapsedThisTurn
              >= (millisRemaining / (board.PlyCount > 12 ? 30 : 180))
              || maxDepth >= 100) searchCanceled = true;
-        if (board.IsDraw()) return -20;
-        if (board.IsInCheckmate()) return -100_000 + (maxDepth - depth);
-        if (depth == 0) return QSearch(alpha, beta);
+        if (board.IsDraw()) return 0;
+        if (board.IsInCheckmate()) return -100_000 + ply;
+        if (depth <= 0) return QSearch(alpha, beta);
+
 
         //Item1 is hash; Item2 is eval; Item3 is depth; Item4 is tMaxDepth; Item5 is flag
         ref var transposition = ref TTable[board.ZobristKey & 0x7FFFFF];
@@ -108,57 +110,53 @@ public class MyBot : IChessBot
             eval,
             bestEval = -100_000,
             startingAlpha = alpha,
-            flaggie = transposition.Item5,
-            setFlag;
+            flaggie = transposition.Item5;
 
-        if (depth > 2
+        if (maxDepth > 2
             && transposition.Item1 == board.ZobristKey
-            && transposition.Item3 <= depth
+            && transposition.Item3 > depth
             && transposition.Item4 >= maxDepth
-            &&
-            (flaggie == 1
-            || (flaggie == 2 && TE > beta)
-            || (flaggie == 3 && TE <= alpha)))
-            return TE;
+            && (flaggie == 1
+                || (flaggie == 2 && TE > beta)
+                || (flaggie == 3 && TE <= alpha)))
+                return TE;
 
         foreach (Move response in SortMoves(board.GetLegalMoves(), depth))
         {
-            board.MakeMove(response);
-            eval = -Negamax(depth - 1, -beta, -alpha);
-            board.UndoMove(response);
-
             if (searchCanceled) return 0;
 
-            if (eval > bestEval && !searchCanceled)
-            {
-                bestEval = eval;
-                if (depth == maxDepth) bestMove = response;
-            }
+            board.MakeMove(response);
+            int extension = board.IsInCheck() ? 1 : 0;
+            eval = -Negamax(depth - 1 + extension, ply + 1, -beta, -alpha);
+            board.UndoMove(response);
 
             if (eval >= beta)
             {
                 transposition = (board.ZobristKey, bestEval, depth, maxDepth, 2);
-                killerMoves[depth] = response;
-                historyHeuristics[board.IsWhiteToMove ? 0 : 1, response.StartSquare.Index, response.TargetSquare.Index] += depth * depth;
 
+                if (!response.IsCapture)
+                {
+                    killerMoves[depth] = response;
+                    historyHeuristics[board.IsWhiteToMove ? 0 : 1, response.StartSquare.Index, response.TargetSquare.Index] += depth * depth;
+                }
+                
                 return beta;
+            }
+
+            if (eval > bestEval && !searchCanceled)
+            {
+                bestEval = eval;
+                if (ply == 0) bestMove = response;
             }
 
             alpha = Math.Max(alpha, eval);
         }
 
+        //New transposition
         if (!searchCanceled)
-        {
-            if (bestEval < startingAlpha)
-                setFlag = 3; //upper bound
-
-            else if (bestEval >= beta)
-                setFlag = 2; //lower bound
-
-            else setFlag = 1; //"exact" score
-
-            transposition = (board.ZobristKey, bestEval, depth, maxDepth, setFlag);
-        }
+            transposition = (board.ZobristKey, bestEval, depth, maxDepth, bestEval >= beta ? 2
+                                                                                         : bestEval > startingAlpha ? 3
+                                                                                                                    : 1);
 
         return alpha;
     }
@@ -215,12 +213,30 @@ public class MyBot : IChessBot
                         endgame += 62;
                     }
 
-                    // Doubled pawns penalty (brought to my attention by Y3737)
+                    // Doubled pawns penalty
                     if (piece == 0 && (0x101010101010101UL << (square & 7) & mask) > 0)
                     {
                         middlegame -= 15;
                         endgame -= 15;
                     }
+
+                    // Semi-open file bonus for rooks
+                    if (piece == 3 && (0x101010101010101UL << (square & 7) & board.GetPieceBitboard(PieceType.Pawn, sideToMove > 0)) == 0)
+                    {
+                        middlegame += 13;
+                        endgame += 10;
+                    }
+                    
+
+                    // Mobility bonus
+                    if (piece >= 2 && piece <= 4)
+                    {
+                        int bonus = BitboardHelper.GetNumberOfSetBits(
+                            BitboardHelper.GetPieceAttacks((PieceType)piece + 1, new Square(square ^ 0b111000 * sideToMove), board, sideToMove > 0));
+                        middlegame += bonus;
+                        endgame += bonus * 2;
+                    }
+                    
                 }
         return (middlegame * gamephase + endgame * (24 - gamephase)) / (board.IsWhiteToMove ? 24 : -24)
             // Tempo bonus to help with aspiration windows
@@ -247,34 +263,27 @@ public class MyBot : IChessBot
 
         foreach (Move move in movesToSort)
         {
-            int moveScoreGuess =
-
-            //uses -= for moveScoreGuess so that you don't have to do .Reverse() at the end
-
-            // Best move
-            move.Equals(bestMove) ? 10_000_000 :
-            // MVV-LVA (Most Valuable Victim, Least Valuable Attacker)
-            move.IsCapture ? 2_000_000 * (int)move.CapturePieceType - (int)move.MovePieceType :
-            // Killer Moves
-            d > 0 && killerMoves[d] == move ? 1_000_000 :
-            // History Heuristics
-            historyHeuristics[board.IsWhiteToMove ? 0 : 1, move.StartSquare.Index, move.TargetSquare.Index];
-
             //modify
-            sortableMoves[++i].Ranking = -moveScoreGuess;
+            sortableMoves[++i].Ranking = -(
+                move.Equals(bestMove) ? 10_000_000 :
+                // MVV-LVA (Most Valuable Victim, Least Valuable Attacker)
+                move.IsCapture ? 2_000_000 * (int)move.CapturePieceType - (int)move.MovePieceType :
+                // Killer Moves
+                d > 0 && killerMoves[d] == move ? 1_000_000 :
+                // History Heuristics
+                historyHeuristics[board.IsWhiteToMove ? 0 : 1, move.StartSquare.Index, move.TargetSquare.Index]);
+
             sortableMoves[i].UnsortedMove = move;
         }
 
-
         //Only use the array that we modified, then sort
-        //Convert all elements to the move element
-
         var ourMoves = sortableMoves.Take(movesToSort.Length).ToArray();
         Array.Sort(ourMoves, (x, y) => x.Ranking.CompareTo(y.Ranking));
 
 #if DODEBUG
         maxTime = Math.Max(maxTime, timer.MillisecondsRemaining - startTime);
 #endif
+        //Convert all elements to the move element
         return ourMoves.Select(a => a.UnsortedMove).ToArray();
     }
 }
