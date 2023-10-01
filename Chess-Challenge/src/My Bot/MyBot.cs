@@ -107,7 +107,7 @@ public class MyBot : IChessBot
 #endif
     }
 
-    int Negamax(int depth, int ply, int alpha, int beta)
+    int Negamax(int depth, int ply, int alpha, int beta, bool is_qsearch)
     {
         //Bunch of conditionals at the beginning to save computational time
         if (timer.MillisecondsElapsedThisTurn
@@ -115,7 +115,7 @@ public class MyBot : IChessBot
              || maxDepth >= 100) searchCanceled = true;
         if (board.IsDraw()) return 0;
         if (board.IsInCheckmate()) return -100_000 + ply;
-        if (depth <= 0) return QSearch(alpha, beta);
+        if (depth <= 0) is_qsearch=true; //return QSearch(alpha, beta);
 
 
         //Item1 is hash; Item2 is eval; Item3 is depth; Item4 is tMaxDepth; Item5 is flag
@@ -128,6 +128,7 @@ public class MyBot : IChessBot
             flaggie = transposition.Item5;
 
         if (maxDepth > 2
+            && ! is_qsearch
             && transposition.Item1 == board.ZobristKey
             && transposition.Item3 > depth
             && transposition.Item4 >= maxDepth
@@ -136,14 +137,14 @@ public class MyBot : IChessBot
                 || (flaggie == 3 && TE <= alpha)))
                 return TE;
 
-        foreach (Move response in SortMoves(board.GetLegalMoves(), depth))
+        foreach (Move response in SortMoves(board.GetLegalMoves(is_qsearch), depth))
         {
             if (searchCanceled) return 0;
 
             board.MakeMove(response);
-            //Depth extension, only decrease depth if the move wasn't check
-            //Equivilent to adding depth if there is check but with less tokens
-            eval = -Negamax(depth - (board.IsInCheck() ? 0 : 1), ply + 1, -beta, -alpha);
+            //Depth extension, only decrease depth if the move wasn't check (and not performing qsearch)
+            //Equivalent to adding depth if there is check but with fewer tokens
+            eval = -Negamax(depth - (board.IsInCheck() && ! is_qsearch ? 0 : 1), ply + 1, -beta, -alpha, is_qsearch);
             board.UndoMove(response);
 
             if (eval >= beta)
